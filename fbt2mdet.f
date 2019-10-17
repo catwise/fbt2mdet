@@ -1,30 +1,32 @@
-c     vsn 1.0  B91012: cloned from fbt.f
+c     vsn 0.9  B91012: cloned from fbt.f
 c     vsn 1.0  B91014: added mdetID-unwise_objid xref output
+c     vsn 1.0  B91016: changed SNR computation per-band avg dflux)
 c
       character*500 InFNam, OutFnam, XrefNam, NumStr
       character*16, allocatable :: objid(:)
       character*99  TmpStr
-      real*4        flux(2), dflux(2), SNRfac, zeroes(4), StDev, avg,
-     +              dfarray(21) 
+      real*4        flux(2), dflux(2), SNRfac1, SNRfac2, zeroes(4),
+     +              StDev, avg, AvgFrac
       real*8        ra, dec, nullval, sum, sumsq
       integer*4     nargs, iargc, nOut, FileID, status,
      +              readwrite, blocksize, nRows, nCols, nRA, nDec,
      +              nflux, ndflux, hdutype, k, felem, nelems, stat(5),
-     +              narg, nobjid
-      integer       n, n0, n1, n2
+     +              narg, nobjid, k1, k2
+      integer       n, n0, n1, n2, nMid
       logical*4     dbg, doXref
       logical       anynull
       integer*4,    allocatable :: ndex(:)
-      real*4,       allocatable :: fluxes(:), dfluxes(:)
+      real*4,       allocatable :: SNRs(:), flux1s(:), dflux1s(:),
+     +                                      flux2s(:), dflux2s(:)
       real*8,       allocatable :: RAs(:), Decs(:)
 c      
       data nOut/0/, dbg/.false./, narg/2/, zeroes/4*0.0/,
-     +     doXref/.false./ 
+     +     doXref/.false./, AvgFrac/0.005/ 
 c-----------------------------------------------------------------------
 c
       nargs = iargc()
       if (nargs .lt. 2) then
-        print *,'fbt2mdet vsn 1.0  B91014'
+        print *,'fbt2mdet vsn 1.0  B91016'
         print *,'usage: fbt2mdet infile outfile <xref|dbg>'
         print *
         print *,
@@ -120,16 +122,37 @@ c
         call exit(64)
       end if
 c
-      allocate(fluxes(nRows))
-      if (.not.allocated(fluxes)) then
-        print *,'ERROR: allocation of fluxes failed'
+      allocate(SNRs(nRows))
+      if (.not.allocated(SNRs)) then
+        print *,'ERROR: allocation of SNRs failed'
         print *,'       no. elements =',nRows
         call exit(64)
       end if
 c
-      allocate(dfluxes(nRows))
-      if (.not.allocated(dfluxes)) then
-        print *,'ERROR: allocation of dfluxes failed'
+      allocate(flux1s(nRows))
+      if (.not.allocated(flux1s)) then
+        print *,'ERROR: allocation of flux1s failed'
+        print *,'       no. elements =',nRows
+        call exit(64)
+      end if
+c
+      allocate(dflux1s(nRows))
+      if (.not.allocated(dflux1s)) then
+        print *,'ERROR: allocation of dflux1s failed'
+        print *,'       no. elements =',nRows
+        call exit(64)
+      end if
+c
+      allocate(flux2s(nRows))
+      if (.not.allocated(flux2s)) then
+        print *,'ERROR: allocation of flux2s failed'
+        print *,'       no. elements =',nRows
+        call exit(64)
+      end if
+c
+      allocate(dflux2s(nRows))
+      if (.not.allocated(dflux2s)) then
+        print *,'ERROR: allocation of dflux2s failed'
         print *,'       no. elements =',nRows
         call exit(64)
       end if
@@ -149,6 +172,9 @@ c
           call exit(64)
         end if
       end if
+c
+      n1 = 0
+      n2 = 0
 c          
       do 100 n = 1, nRows
 c      
@@ -178,23 +204,27 @@ c
      +              anynull,status)
         if (status .ne. 0) go to 3000
         stat(3) = status
-        fluxes(n) = sqrt(flux(1)**2 + flux(2)**2)
+        flux1s(n)  = flux(1)
+        flux2s(n)  = flux(2)
+        if (flux(1) .gt. 0.0) n1 = n1 +1
+        if (flux(2) .gt. 0.0) n2 = n2 +1
         k = 4
         call ftgcve(FileID,ndflux,n,felem,nelems,0.0d0,dflux,
      +              anynull,status)
         if (status .ne. 0) go to 3000
         stat(4) = status
-        dfluxes(n) = sqrt(dflux(1)**2 + dflux(2)**2)
+        dflux1s(n) = dflux(1)
+        dflux2s(n) = dflux(2)
 c        
-        if (dbg .and. ((n .le. 10) .or. (n .ge. nRows-10))) then
+        if (dbg .and. ((n .le. 5) .or. (n .ge. nRows-5))) then
           print *,'n,felem,ra,status:   ', n, felem, RA,  stat(1)
           print *,'n,felem,dec,status:  ', n, felem, Dec, stat(2)
           print *,'n,felem,flux,status: ', n, felem, flux,  stat(3)
           print *,'n,felem,dflux,status:', n, felem, dflux, stat(4)
           if (doXref) 
      +    print *,'n,felem,objid,status:', n, felem, objid(n), stat(5)
-          print *,'n,fluxes: ',fluxes(n)
-          print *,'n,dfluxes:',dfluxes(n)
+          print *,'n,fluxes: ' ,flux1s(n), flux2s(n)
+          print *,'n,dfluxes:',dflux1s(n), dflux2s(n)
           print *
         end if
 100   continue      
@@ -202,31 +232,61 @@ c
       call ftclos(FileID, status)
       call ftfiou(FileID, status)
 c
-      call TJISORT(nRows,fluxes,ndex)
+      print *,'No. of W1 detections:', n1
+      print *,'No. of W2 detections:', n2
+c
+      call TJISORT(nRows,flux1s,ndex)
+      nMid = (2*nRows-n1)/2            ! midpoint of nonzero W1 range
+      k1 = nMid - NInt(AvgFrac*float(n1))
+      k2 = nMid + NInt(AvgFrac*float(n1))
+      if (k1 .le. nRows-n1) k1 = nRows-n1 + 1
+      if (k2 .gt. nRows)    k2 = nRows
       sum   = 0.0d0
       sumsq = 0.0d0
-      n1 = nRows/2 - 10
-      n2 = nRows/2 + 10
-      n0 = 0
-      do 120 n = n1, n2
-        n0 = n0 + 1
-        dfarray(n0) = dfluxes(ndex(n))
-        sum   = sum   + dfluxes(ndex(n))
-        sumsq = sumsq + dfluxes(ndex(n))**2
-        if (dbg) print *,'n, ndex(n), fluxes(ndex(n)) dfluxes(ndex(n)):',
-     +                    n, ndex(n), fluxes(ndex(n)), dfluxes(ndex(n))
+      do 120 n = k1, k2
+        sum   = sum   + dflux1s(ndex(n))
+        sumsq = sumsq + dflux1s(ndex(n))**2
 120   continue
+      avg = sum/float(k2-k1+1)
+      SNRfac1 = 1.0/avg
+      StDev  = dsqrt(dabs(sumsq/float(k2-k1+1) - avg**2))
+      print *
+      print *,'Median W1 Flux:  ', flux1s(ndex(nMid))
+      print *,'Average W1 dFlux:', avg
+      print *,'StdDev(W1 dFlux):', StDev
+      print *,'Median W1 dFlux: ', dflux1s(ndex(nMid))
+      print *,'SNRfac1:         ', SNRfac1
+      print *,'Median W1 SNR:   ', SNRfac1*flux1s(ndex(nMid))
 c
-      call TJSORT(21,dfarray)
-      avg = sum/21.0d0
-      SNRfac = 1.0/dfarray(11)
-      StDev  = dsqrt(dabs(sumsq/21.0d0 - avg**2))
-      print *,'Median Flux:  ', fluxes(ndex(nRows/2))
-      print *,'Average dFlux:', avg
-      print *,'StdDev(dFlux):', StDev
-      print *,'Median dFlux: ', dfarray(11)
-      print *,'SNRfac:       ', SNRfac
-      print *,'Median SNR:   ', SNRfac*fluxes(ndex(nRows/2))
+      call TJISORT(nRows,flux2s,ndex)
+      nMid = (2*nRows-n2)/2            ! midpoint of nonzero W1 range
+      k1 = nMid - NInt(AvgFrac*float(n2))
+      k2 = nMid + NInt(AvgFrac*float(n2))
+      if (k1 .le. nRows-n2) k1 = nRows-n2 + 1
+      if (k2 .gt. nRows)    k2 = nRows
+      sum   = 0.0d0
+      sumsq = 0.0d0
+      do 140 n = k1, k2
+        sum   = sum   + dflux2s(ndex(n))
+        sumsq = sumsq + dflux2s(ndex(n))**2
+140   continue
+      avg = sum/float(k2-k1+1)
+      SNRfac2 = 1.0/avg
+      StDev  = dsqrt(dabs(sumsq/float(k2-k1+1) - avg**2))
+      print *
+      print *,'Median W2 Flux:  ', flux2s(ndex(nMid))
+      print *,'Average W2 dFlux:', avg
+      print *,'StdDev(W2 dFlux):', StDev
+      print *,'Median W2 dFlux: ', dflux2s(ndex(nMid))
+      print *,'SNRfac2:         ', SNRfac2
+      print *,'Median W2 SNR:   ', SNRfac2*flux1s(ndex(nMid))
+c
+      SNRs = 0.0
+      do 200 n = 1, nRows
+        SNRs(n) = sqrt((SNRFac1*flux1s(n))**2
+     +                +(SNRFac2*flux2s(n))**2)
+200   continue
+      call TJIsort(nRows,SNRs,ndex)
 c
       open (12, file = OutFnam)
       write(12,'(''\Nsrcs =   '',i7)') nRows
@@ -248,7 +308,7 @@ c
         n = nRows-n0+1
         write(12,'(i7,2f11.5,1pe10.3,4f8.2)')
      +             n0, RAs(ndex(n)), Decs(ndex(n)),
-     +             SNRfac*fluxes(ndex(n)), zeroes
+     +             SNRs(ndex(n)), zeroes
         nOut = nOut + 1
         if (doXref) write (14,'(i7,1x,a16)') n0, objid(ndex(n))
 1000  continue
@@ -323,48 +383,5 @@ c
         GO TO 20
         ENDIF
         ND(I) = NDA
-      GO TO 10
-      END
-c
-C=======================================================================
-c                                  Sort for real*4 array
-c                                  from Numerical Recipes via T. Jarrett
-      SUBROUTINE TJSORT(N,RA)
-c
-      Integer*4 N,L,IR,J,I
-      Real*4 RA(N),RRA
-c
-      if (n .lt. 2) return
-      L=N/2+1
-      IR=N
-10    CONTINUE
-        IF(L.GT.1)THEN
-          L=L-1
-          RRA=RA(L)
-        ELSE
-          RRA=RA(IR)
-          RA(IR)=RA(1)
-          IR=IR-1
-          IF(IR.EQ.1)THEN
-            RA(1)=RRA
-            RETURN
-          ENDIF
-        ENDIF
-        I=L
-        J=L+L
-20      IF(J.LE.IR)THEN
-          IF(J.LT.IR)THEN
-            IF(RA(J).LT.RA(J+1))J=J+1
-          ENDIF
-          IF(RRA.LT.RA(J))THEN
-            RA(I)=RA(J)
-            I=J
-            J=J+J
-          ELSE
-            J=IR+1
-          ENDIF
-        GO TO 20
-        ENDIF
-        RA(I)=RRA
       GO TO 10
       END
